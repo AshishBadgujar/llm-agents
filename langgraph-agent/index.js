@@ -1,0 +1,73 @@
+import { MessagesAnnotation, StateGraph, MemorySaver } from '@langchain/langgraph';
+import readline from 'readline/promises';
+import { ChatOllama } from "@langchain/ollama";
+import { TavilySearch } from '@langchain/tavily';
+import { ToolNode } from '@langchain/langgraph/prebuilt';
+
+
+const checkpointer = new MemorySaver()
+const tool = new TavilySearch({
+    maxResults: 3,
+    topic: 'general'
+})
+
+const tools = [tool]
+const toolNode = new ToolNode(tools);
+
+const llm = new ChatOllama({
+    model: "gpt-oss:20b",
+    temperature: 0,
+    maxRetries: 2,
+}).bindTools(tools)
+
+async function callModel(state) {
+    const result = await llm.invoke(state.messages);
+    return {
+        messages: [result]
+    };
+}
+
+function shouldContinue(state) {
+    const lastMessage = state.messages[state.messages.length - 1];
+    console.log(lastMessage);
+    if (lastMessage.tool_calls.length > 0) {
+        return "tools";
+    }
+    return "__end__";
+}
+
+const workflow = new StateGraph(MessagesAnnotation)
+    .addNode('agent', callModel)
+    .addNode('tools', toolNode)
+    .addEdge("__start__", "agent")
+    .addEdge("tools", "agent")
+    .addConditionalEdges("agent", shouldContinue);
+
+const app = workflow.compile({ checkpointer });
+
+
+async function main() {
+    const rl = readline.createInterface({
+        input: process.stdin,
+        output: process.stdout
+    });
+    while (true) {
+        const userInput = await rl.question('You: ');
+        if (userInput === '/bye') {
+            break;
+        }
+
+        const finalState = await app.invoke({
+            messages: [{
+                role: 'user',
+                content: userInput
+            }]
+        }, { configurable: { thread_id: "1" } });
+        const lastMessage = finalState.messages[finalState.messages.length - 1];
+        console.log(`AI: ${lastMessage.content}`);
+
+    }
+    rl.close();
+}
+
+main();
